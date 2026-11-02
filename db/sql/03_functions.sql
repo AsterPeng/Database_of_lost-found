@@ -25,11 +25,23 @@ DECLARE
   v_post posts%ROWTYPE;
   v_reviewer users%ROWTYPE;
   v_role text;
+  v_post_id text;
   v_decision text := upper(coalesce(p_decision, ''));
   v_now timestamp(3) := (now() AT TIME ZONE 'UTC');
   v_rejected jsonb := '[]'::jsonb;
 BEGIN
-  -- 先锁认领，再锁帖子，固定顺序降低死锁概率
+  -- 先读 post_id（不加锁），再按“帖子 → 认领”的固定顺序加锁。
+  -- 同一帖子的并发审核都先竞争帖子行锁，避免“各自锁认领后再等帖子”形成死锁。
+  SELECT post_id INTO v_post_id FROM claims WHERE id = p_claim_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'CLAIM_NOT_FOUND');
+  END IF;
+
+  SELECT * INTO v_post FROM posts WHERE id = v_post_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'POST_NOT_FOUND');
+  END IF;
+
   SELECT * INTO v_claim FROM claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
     RETURN jsonb_build_object('ok', false, 'code', 'CLAIM_NOT_FOUND');
@@ -39,9 +51,9 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'CLAIM_NOT_PENDING');
   END IF;
 
-  SELECT * INTO v_post FROM posts WHERE id = v_claim.post_id FOR UPDATE;
-  IF NOT FOUND THEN
-    RETURN jsonb_build_object('ok', false, 'code', 'POST_NOT_FOUND');
+  -- 认领的 post_id 理论上不会变化；加锁后复核，避免读到不一致的快照
+  IF v_claim.post_id <> v_post.id THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'CLAIM_NOT_PENDING');
   END IF;
 
   SELECT * INTO v_reviewer FROM users WHERE id = p_reviewer_id;
