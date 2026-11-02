@@ -139,17 +139,6 @@ export async function reviewClaimAction(formData: FormData): Promise<void> {
         },
       });
       if (result.count === 0) return false;
-      if (reviewerRole === "ADMIN") {
-        await tx.auditLog.create({
-          data: {
-            operatorId: user.id,
-            action: "CLAIM_REVIEW",
-            targetType: "CLAIM",
-            targetId: claim.id,
-            detail: { title: claim.post.title, decision: "REJECT", note: note || null },
-          },
-        });
-      }
       return true;
     });
     if (!updated) return;
@@ -206,17 +195,6 @@ export async function reviewClaimAction(formData: FormData): Promise<void> {
         update: {},
         create: { claimId: claim.id },
       });
-      if (reviewerRole === "ADMIN") {
-        await tx.auditLog.create({
-          data: {
-            operatorId: user.id,
-            action: "CLAIM_REVIEW",
-            targetType: "CLAIM",
-            targetId: claim.id,
-            detail: { title: claim.post.title, decision: "ACCEPT", note: note || null },
-          },
-        });
-      }
       return true;
     });
     if (!updated) return;
