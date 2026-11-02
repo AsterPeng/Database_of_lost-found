@@ -23,6 +23,15 @@ import {
 } from "../../src/lib/stats";
 
 const prisma = new PrismaClient();
+
+// 防止误在展示库上运行：只允许数据库名包含 test 的连接串
+if (!/test/i.test(process.env.DATABASE_URL ?? "")) {
+  console.error(
+    "拒绝执行：verify-stats-parity 会创建临时数据，请把 DATABASE_URL 指向测试库（例如 clfp_test）。",
+  );
+  process.exit(1);
+}
+
 const suffix = randomBytes(5).toString("hex");
 const now = new Date();
 const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
