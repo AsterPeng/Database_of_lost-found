@@ -274,8 +274,10 @@ WITH params AS (
     (COALESCE(p_until, now()) AT TIME ZONE 'UTC') AS until_ts,
     NULLIF(p_department, '') AS dept
 ),
+-- fn_stats 是 SECURITY INVOKER，clfp_stats 只有列级授权；
+-- SELECT * 会要求整表 SELECT 权限，因此这里只列出统计实际用到的列。
 user_scope AS (
-  SELECT u.*
+  SELECT u.department
   FROM users u
   CROSS JOIN params pa
   WHERE u.role = 'USER'
@@ -283,7 +285,7 @@ user_scope AS (
     AND (pa.dept IS NULL OR u.department = pa.dept)
 ),
 new_user_scope AS (
-  SELECT u.*
+  SELECT u.id
   FROM users u
   CROSS JOIN params pa
   WHERE u.role = 'USER'
@@ -293,7 +295,13 @@ new_user_scope AS (
 ),
 post_scope AS (
   SELECT
-    p.*,
+    p.id,
+    p.author_id,
+    p.category_id,
+    p.status,
+    p.taken_down_at,
+    p.created_at,
+    p.deleted_at,
     u.department AS author_department,
     c.name AS category_name
   FROM posts p
