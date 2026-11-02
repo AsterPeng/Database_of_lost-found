@@ -11,7 +11,9 @@
 | `isolation-levels.ts` | P5 | 隔离级别与异常现象实验 |
 | `generate-data.ts` | P6 | 在 `clfp_bench` 生成 10 万级数据 |
 | `benchmark.ts` | P6 | 基准查询与 `EXPLAIN (ANALYZE, BUFFERS)` 收集 |
-| `backup-restore.ps1` | P7 | 备份、恢复与行数校验 |
+| `backup-restore.ps1` | P7 | 备份、恢复与行数/校验和比对 |
+| `generate-er-diagram.py` | P8 | 生成报告用 ER 图 |
+| `export-report-docx.py` | P8 | 把课程报告 Markdown 导出为 Word |
 
 > P3 的统计对比脚本必须在测试库运行，示例：
 > ```bash
