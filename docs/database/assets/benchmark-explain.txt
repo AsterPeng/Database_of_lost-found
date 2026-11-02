@@ -1,0 +1,196 @@
+# P6 基准查询 EXPLAIN 输出
+
+生成时间：2026-11-02T06:50:14.116Z
+
+## 公开信息流（LOST + 时间倒序 + LIMIT 12）
+
+### 有索引（0.02 ms）
+```text
+Limit  (cost=0.29..1.96 rows=12 width=41) (actual time=0.007..0.010 rows=12.00 loops=1)
+  Buffers: shared hit=14
+  ->  Index Scan using posts_public_feed_idx on posts  (cost=0.29..6570.40 rows=47310 width=41) (actual time=0.006..0.009 rows=12.00 loops=1)
+        Index Cond: (type = 'LOST'::"PostType")
+        Index Searches: 1
+        Buffers: shared hit=14
+Planning Time: 0.073 ms
+Execution Time: 0.017 ms
+```
+
+### 无索引（9.91 ms）
+```text
+Limit  (cost=5016.03..5016.06 rows=12 width=41) (actual time=9.475..9.476 rows=12.00 loops=1)
+  Buffers: shared hit=1418
+  ->  Sort  (cost=5016.03..5134.31 rows=47310 width=41) (actual time=9.475..9.475 rows=12.00 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 25kB
+        Buffers: shared hit=1418
+        ->  Bitmap Heap Scan on posts  (cost=550.87..3931.46 rows=47310 width=41) (actual time=0.679..6.342 rows=47238.00 loops=1)
+              Recheck Cond: (type = 'LOST'::"PostType")
+              Filter: ((deleted_at IS NULL) AND (taken_down_at IS NULL) AND (archived_at IS NULL))
+              Rows Removed by Filter: 2762
+              Heap Blocks: exact=1377
+              Buffers: shared hit=1418
+              ->  Bitmap Index Scan on posts_type_status_idx  (cost=0.00..539.05 rows=49967 width=0) (actual time=0.575..0.576 rows=50000.00 loops=1)
+                    Index Cond: (type = 'LOST'::"PostType")
+                    Index Searches: 1
+                    Buffers: shared hit=41
+Planning Time: 0.155 ms
+Execution Time: 9.489 ms
+```
+
+## 中文关键词搜索（title ILIKE '%稀有物品%'）
+
+### 有索引（1.40 ms）
+```text
+Limit  (cost=60.00..60.03 rows=9 width=41) (actual time=1.255..1.256 rows=20.00 loops=1)
+  Buffers: shared hit=1005
+  ->  Sort  (cost=60.00..60.03 rows=9 width=41) (actual time=1.255..1.256 rows=20.00 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 27kB
+        Buffers: shared hit=1005
+        ->  Bitmap Heap Scan on posts  (cost=21.54..59.86 rows=9 width=41) (actual time=0.166..1.173 rows=945.00 loops=1)
+              Recheck Cond: (title ~~* '%稀有物品%'::text)
+              Filter: ((deleted_at IS NULL) AND (taken_down_at IS NULL) AND (archived_at IS NULL))
+              Rows Removed by Filter: 55
+              Heap Blocks: exact=1000
+              Buffers: shared hit=1005
+              ->  Bitmap Index Scan on posts_title_trgm_idx  (cost=0.00..21.54 rows=10 width=0) (actual time=0.090..0.090 rows=1000.00 loops=1)
+                    Index Cond: (title ~~* '%稀有物品%'::text)
+                    Index Searches: 1
+                    Buffers: shared hit=5
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.137 ms
+Execution Time: 1.268 ms
+```
+
+### 无索引（56.15 ms）
+```text
+Limit  (cost=4006.14..4006.17 rows=9 width=41) (actual time=55.895..55.897 rows=20.00 loops=1)
+  Buffers: shared hit=2756
+  ->  Sort  (cost=4006.14..4006.17 rows=9 width=41) (actual time=55.894..55.895 rows=20.00 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 27kB
+        Buffers: shared hit=2756
+        ->  Seq Scan on posts  (cost=0.00..4006.00 rows=9 width=41) (actual time=0.068..55.782 rows=945.00 loops=1)
+              Filter: ((deleted_at IS NULL) AND (taken_down_at IS NULL) AND (archived_at IS NULL) AND (title ~~* '%稀有物品%'::text))
+              Rows Removed by Filter: 99055
+              Buffers: shared hit=2756
+Planning Time: 0.171 ms
+Execution Time: 55.912 ms
+```
+
+## 待审认领队列（PENDING + 按 escalate_at）
+
+### 有索引（0.03 ms）
+```text
+Limit  (cost=0.29..1.75 rows=20 width=23) (actual time=0.007..0.016 rows=20.00 loops=1)
+  Buffers: shared hit=22
+  ->  Index Scan using claims_status_escalate_at_idx on claims  (cost=0.29..7309.54 rows=100000 width=23) (actual time=0.007..0.014 rows=20.00 loops=1)
+        Index Cond: (status = 'PENDING'::"ClaimStatus")
+        Filter: (escalated_at IS NULL)
+        Index Searches: 1
+        Buffers: shared hit=22
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.067 ms
+Execution Time: 0.022 ms
+```
+
+### 无索引（0.02 ms）
+```text
+Limit  (cost=0.29..1.75 rows=20 width=23) (actual time=0.007..0.013 rows=20.00 loops=1)
+  Buffers: shared hit=22
+  ->  Index Scan using claims_status_escalate_at_idx on claims  (cost=0.29..7309.54 rows=100000 width=23) (actual time=0.006..0.011 rows=20.00 loops=1)
+        Index Cond: (status = 'PENDING'::"ClaimStatus")
+        Filter: (escalated_at IS NULL)
+        Index Searches: 1
+        Buffers: shared hit=22
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.060 ms
+Execution Time: 0.019 ms
+```
+
+## 未读通知计数（单用户）
+
+### 有索引（0.04 ms）
+```text
+Aggregate  (cost=8.45..8.46 rows=1 width=4) (actual time=0.023..0.023 rows=1.00 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using notifications_unread_idx on notifications  (cost=0.42..8.44 rows=1 width=0) (actual time=0.020..0.021 rows=1.00 loops=1)
+        Index Cond: (user_id = 'bench-u-000042'::text)
+        Filter: (deliver_at <= (now() AT TIME ZONE 'UTC'::text))
+        Index Searches: 1
+        Buffers: shared hit=4
+Planning Time: 0.092 ms
+Execution Time: 0.037 ms
+```
+
+### 无索引（0.03 ms）
+```text
+Aggregate  (cost=8.45..8.46 rows=1 width=4) (actual time=0.018..0.018 rows=1.00 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using notifications_user_id_read_at_idx on notifications  (cost=0.42..8.45 rows=1 width=0) (actual time=0.016..0.017 rows=1.00 loops=1)
+        Index Cond: ((user_id = 'bench-u-000042'::text) AND (read_at IS NULL))
+        Filter: (deliver_at <= (now() AT TIME ZONE 'UTC'::text))
+        Index Searches: 1
+        Buffers: shared hit=4
+Planning Time: 0.062 ms
+Execution Time: 0.029 ms
+```
+
+## 统计函数 fn_stats（全部时间）（3532.49 ms）
+```text
+Result  (cost=0.00..0.26 rows=1 width=32) (actual time=3491.595..3492.108 rows=1.00 loops=1)
+  Buffers: shared hit=28673, temp read=11991 written=9333
+Planning Time: 0.008 ms
+Execution Time: 3492.118 ms
+```
+
+## 统计函数 fn_stats（最近 30 天）（1206.02 ms）
+```text
+Result  (cost=0.00..0.27 rows=1 width=32) (actual time=1164.575..1165.113 rows=1.00 loops=1)
+  Buffers: shared hit=28670, temp read=1804 written=1804
+Planning Time: 0.023 ms
+Execution Time: 1165.132 ms
+```
+
+## 院系物化视图（全部时间）（0.02 ms）
+```text
+Sort  (cost=1.20..1.22 rows=8 width=48) (actual time=0.009..0.009 rows=8.00 loops=1)
+  Sort Key: posts DESC, users DESC
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=1
+  ->  Seq Scan on mv_stats_department  (cost=0.00..1.08 rows=8 width=48) (actual time=0.005..0.005 rows=8.00 loops=1)
+        Buffers: shared hit=1
+Planning Time: 0.028 ms
+Execution Time: 0.015 ms
+```
+
+## 类别物化视图（全部时间）（0.03 ms）
+```text
+Sort  (cost=1.14..1.15 rows=6 width=44) (actual time=0.009..0.009 rows=6.00 loops=1)
+  Sort Key: posts DESC
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=1
+  ->  Seq Scan on mv_stats_category  (cost=0.00..1.06 rows=6 width=44) (actual time=0.005..0.006 rows=6.00 loops=1)
+        Buffers: shared hit=1
+Planning Time: 0.029 ms
+Execution Time: 0.016 ms
+```
+
+## 物化视图刷新（250.00 ms）
+`SELECT fn_refresh_stats_mv()` 的刷新耗时见基准输出；全量总览查询应优先读物化视图。
+
+## 匹配候选（feedback = NONE + 时间倒序）（0.03 ms）
+```text
+Limit  (cost=0.29..2.19 rows=20 width=33) (actual time=0.006..0.014 rows=20.00 loops=1)
+  Buffers: shared hit=22
+  ->  Index Scan Backward using matches_created_at_idx on matches  (cost=0.29..9465.82 rows=99978 width=33) (actual time=0.006..0.013 rows=20.00 loops=1)
+        Filter: (feedback = 'NONE'::"MatchFeedback")
+        Index Searches: 1
+        Buffers: shared hit=22
+Planning Time: 0.050 ms
+Execution Time: 0.021 ms
+```

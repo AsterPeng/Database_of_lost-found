@@ -1,6 +1,6 @@
 # 数据库实验脚本
 
-本目录用于存放数据库课程化改造的造数、基准、并发、隔离级别、权限演示与备份恢复脚本。P1 只建立目录；P4~P7 按阶段补充：
+本目录用于存放数据库课程化改造的造数、基准、并发、隔离级别、权限演示与备份恢复脚本。P2~P8 按阶段补充：
 
 | 脚本 | 阶段 | 用途 |
 | --- | --- | --- |
@@ -16,4 +16,10 @@
 > P3 的统计对比脚本必须在测试库运行，示例：
 > ```bash
 > DATABASE_URL="postgresql://.../clfp_test" npx tsx scripts/db/verify-stats-parity.ts
+> ```
+>
+> P6 的造数与基准只允许在独立基准库 `clfp_bench` 运行：
+> ```bash
+> DATABASE_URL="postgresql://.../clfp_bench" npx tsx scripts/db/generate-data.ts
+> DATABASE_URL="postgresql://.../clfp_bench" npx tsx scripts/db/benchmark.ts
 > ```

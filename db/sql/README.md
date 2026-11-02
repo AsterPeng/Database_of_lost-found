@@ -11,7 +11,7 @@
 | `04_triggers.sql` | P2：帖子状态机、匹配一致性、认领审计触发器 | 5 |
 | `05_materialized_views.sql` | P2：院系/类别物化视图与刷新函数 | 6 |
 | `06_roles_rls.sql` | P4：角色、授权与行级安全 | 7 |
-| `07_benchmark_queries.sql` | P6：基准查询与执行计划 | 8 |
+| `07_benchmark_data.sql` | P6：10 万级基准数据生成（只对 `clfp_bench` 执行） | 8 |
 | `08_demo_queries.sql` | P8：答辩演示查询 | 9 |
 
 ## 使用方式
@@ -37,3 +37,4 @@
 | `20261102093500_fix_claim_audit_decision` | 已合并进 `04_triggers.sql` |
 | `20261102094000_relax_claim_handover_checks` | 已合并进 `01_constraints_indexes.sql` |
 | `20261102094500_fix_mv_stats_category` | 已合并进 `05_materialized_views.sql` |
+| `20261102120000_fix_fn_review_claim_lock_order` | 已合并进 `03_functions.sql`（P5 锁顺序修复） |
