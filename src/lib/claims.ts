@@ -9,38 +9,53 @@ import { notifyAdmins } from "./notifications";
 /** 作者超过该时长未处理，认领申请自动转交管理员 */
 export const ESCALATE_HOURS = 48;
 
+type EscalatedClaim = {
+  claimId: string;
+  postId: string;
+  postTitle: string;
+  claimantId: string;
+};
+
+type EscalateResult = {
+  count?: number;
+  claims?: EscalatedClaim[];
+};
+
 /**
  * 把超时未处理的待审申请标记为「已转交管理员」，并通知管理员。
- * 采用懒执行（在相关页面加载时触发），这样不需要额外的定时任务也能保证语义正确。
+ * P3：批量标记与行锁交给数据库函数 fn_escalate_overdue_claims；
+ * 应用层根据返回的认领列表发送通知，保持原有文案与免打扰逻辑。
  */
 export async function escalateOverdueClaims(): Promise<number> {
-  const overdue = await prisma.claim.findMany({
-    where: { status: "PENDING", escalatedAt: null, escalateAt: { lte: new Date() } },
-    select: {
-      id: true,
-      post: { select: { id: true, title: true } },
-      claimant: { select: { nickname: true } },
-    },
-  });
-  if (overdue.length === 0) return 0;
+  const rows = await prisma.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+    SELECT fn_escalate_overdue_claims() AS result
+  `;
+  const raw = rows[0]?.result;
+  if (raw === undefined || raw === null) return 0;
 
-  let escalated = 0;
-  for (const claim of overdue) {
-    const updated = await prisma.claim.updateMany({
-      where: { id: claim.id, status: "PENDING", escalatedAt: null, escalateAt: { lte: new Date() } },
-      data: { escalatedAt: new Date() },
-    });
-    if (updated.count === 0) continue;
-    escalated += 1;
+  const payload = (typeof raw === "string" ? JSON.parse(raw) : raw) as EscalateResult;
+  const claims = payload.claims ?? [];
+  if (claims.length === 0) return Number(payload.count ?? 0);
+
+  const nicknames = new Map(
+    (
+      await prisma.user.findMany({
+        where: { id: { in: claims.map((claim) => claim.claimantId) } },
+        select: { id: true, nickname: true },
+      })
+    ).map((user) => [user.id, user.nickname]),
+  );
+
+  for (const claim of claims) {
     await notifyAdmins({
       type: "CLAIM_ESCALATED",
       title: "有认领申请超时未处理",
-      body: `《${claim.post.title}》的认领申请已超过 ${ESCALATE_HOURS} 小时未被发布者处理（申请人 ${claim.claimant.nickname}），请及时审核。`,
-      link: `/admin/claims/${claim.id}`,
+      body: `《${claim.postTitle}》的认领申请已超过 ${ESCALATE_HOURS} 小时未被发布者处理（申请人 ${nicknames.get(claim.claimantId) ?? "同学"}），请及时审核。`,
+      link: `/admin/claims/${claim.claimId}`,
     });
   }
 
-  return escalated;
+  return Number(payload.count ?? claims.length);
 }
 
 export const claimInclude = {

@@ -56,7 +56,7 @@ export function normalizeRange(value: string | undefined): StatsRangeKey {
   return found?.key ?? "30d";
 }
 
-export async function computeStats(
+export async function computeStatsLegacy(
   rangeKey: StatsRangeKey,
   department = "",
   now: Date = new Date(),
@@ -188,6 +188,99 @@ export async function computeStats(
     departments: departmentsRaw
       .map((item) => item.department)
       .filter((value): value is string => Boolean(value)),
+  };
+}
+
+type SqlStatsPayload = {
+  totals?: {
+    users?: number;
+    newUsers?: number;
+    posts?: number;
+    resolved?: number;
+    matches?: number;
+    claims?: number;
+    takenDown?: number;
+  };
+  recoveryRate?: number;
+  byDepartment?: Array<{
+    department: string;
+    users: number;
+    posts: number;
+    resolved: number;
+    recoveryRate: number;
+  }>;
+  byCategory?: Array<{ category: string; posts: number; resolved: number }>;
+  departments?: string[];
+};
+
+/**
+ * 统计报表（P3）：计算下推到 PostgreSQL 函数 fn_stats。
+ * 口径与 computeStatsLegacy 保持一致；后者保留用于新旧实现对比测试。
+ */
+export async function computeStats(
+  rangeKey: StatsRangeKey,
+  department = "",
+  now: Date = new Date(),
+): Promise<StatsResult> {
+  const range = STATS_RANGES.find((item) => item.key === rangeKey) ?? STATS_RANGES[1];
+  const since = range.days ? new Date(now.getTime() - range.days * 24 * 60 * 60 * 1000) : null;
+
+  const rows = await prisma.$queryRaw<Array<{ stats: Prisma.JsonValue }>>`
+    SELECT fn_stats(${since}::timestamptz, ${now}::timestamptz, ${department || null}::text) AS stats
+  `;
+
+  const raw = rows[0]?.stats;
+  if (raw === undefined || raw === null) {
+    throw new Error("fn_stats returned no result");
+  }
+  const payload = (typeof raw === "string" ? JSON.parse(raw) : raw) as SqlStatsPayload;
+
+  const totals = {
+    users: Number(payload.totals?.users ?? 0),
+    newUsers: Number(payload.totals?.newUsers ?? 0),
+    posts: Number(payload.totals?.posts ?? 0),
+    resolved: Number(payload.totals?.resolved ?? 0),
+    matches: Number(payload.totals?.matches ?? 0),
+    claims: Number(payload.totals?.claims ?? 0),
+    takenDown: Number(payload.totals?.takenDown ?? 0),
+  };
+
+  const byDepartment: DepartmentRow[] = (payload.byDepartment ?? [])
+    .map((row) => ({
+      department: String(row.department),
+      users: Number(row.users ?? 0),
+      posts: Number(row.posts ?? 0),
+      resolved: Number(row.resolved ?? 0),
+      recoveryRate: Number(row.recoveryRate ?? 0),
+    }))
+    .sort(
+      (a, b) =>
+        b.posts - a.posts ||
+        b.users - a.users ||
+        a.department.localeCompare(b.department, "zh-CN"),
+    );
+
+  const byCategory: CategoryRow[] = (payload.byCategory ?? [])
+    .map((row) => ({
+      category: String(row.category),
+      posts: Number(row.posts ?? 0),
+      resolved: Number(row.resolved ?? 0),
+    }))
+    .sort(
+      (a, b) =>
+        b.posts - a.posts || a.category.localeCompare(b.category, "zh-CN"),
+    );
+
+  return {
+    rangeKey: range.key,
+    rangeLabel: range.label,
+    since,
+    department,
+    totals,
+    recoveryRate: Number(payload.recoveryRate ?? 0),
+    byDepartment,
+    byCategory,
+    departments: (payload.departments ?? []).map(String),
   };
 }
 

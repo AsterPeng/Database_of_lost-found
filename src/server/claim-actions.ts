@@ -6,6 +6,7 @@
  */
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { Prisma } from "@prisma/client";
 import { claimSchema, handoverSchema, parseMeetAt } from "@/lib/claim-validation";
 import { getClaimById, isClaimParty, ESCALATE_HOURS } from "@/lib/claims";
 import { encryptField, maskContact } from "@/lib/crypto";
@@ -19,7 +20,27 @@ function text(formData: FormData, key: string): string {
   return String(formData.get(key) ?? "").trim();
 }
 
-class StaleClaimError extends Error {}
+function parseJson<T>(value: unknown): T {
+  return (typeof value === "string" ? JSON.parse(value) : value) as T;
+}
+
+type ClaimReviewResult = {
+  ok: boolean;
+  code?: string;
+  status?: "ACCEPTED" | "REJECTED";
+  reviewerRole?: "OWNER" | "ADMIN";
+  claimantId?: string;
+  postId?: string;
+  postTitle?: string;
+  rejectedClaims?: Array<{ claimId: string; claimantId: string }>;
+};
+
+type HandoverResult = {
+  ok: boolean;
+  code?: string;
+  completedAt?: string;
+  completedById?: string;
+};
 
 function revalidateClaim(claimId: string, postId?: string) {
   revalidatePath("/me/claims");
@@ -107,8 +128,9 @@ export async function cancelClaimAction(formData: FormData): Promise<void> {
 }
 
 /**
- * 审核认领：帖子作者先审，超时未处理自动转交管理员。
- * 通过后该帖子标记为已解决，同一帖子的其它待审申请一并拒绝。
+ * 审核认领（P3）：原子状态变更交给数据库函数 fn_review_claim。
+ * 函数内部用行锁完成权限校验、帖子状态占用、同帖其它申请自动拒绝与交接记录创建；
+ * 应用层只负责发送通知与刷新页面。
  */
 export async function reviewClaimAction(formData: FormData): Promise<void> {
   const user = await requireUser();
@@ -116,117 +138,60 @@ export async function reviewClaimAction(formData: FormData): Promise<void> {
   const decision = text(formData, "decision");
   const note = text(formData, "note");
 
-  const claim = await getClaimById(claimId);
-  if (!claim || claim.status !== "PENDING") return;
+  const rows = await prisma.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+    SELECT fn_review_claim(
+      ${claimId}::text,
+      ${user.id}::text,
+      ${decision}::text,
+      ${note || null}::text
+    ) AS result
+  `;
+  const result = parseJson<ClaimReviewResult>(rows[0]?.result);
+  if (!result?.ok) return;
 
-  const isOwner = claim.post.authorId === user.id;
-  const isAdmin = user.role === "ADMIN";
-  if (!isOwner && !(isAdmin && claim.escalatedAt !== null)) return;
+  const postId = result.postId;
+  const postTitle = result.postTitle ?? "";
 
-  const reviewerRole = isOwner ? "OWNER" : "ADMIN";
-  const reviewedAt = new Date();
-
-  if (decision === "REJECT") {
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.claim.updateMany({
-        where: { id: claim.id, status: "PENDING" },
-        data: {
-          status: "REJECTED",
-          reviewNote: note || null,
-          reviewedById: user.id,
-          reviewedAt,
-          reviewerRole,
-        },
+  if (result.status === "REJECTED") {
+    if (result.claimantId) {
+      await notify({
+        userId: result.claimantId,
+        type: "CLAIM_RESULT",
+        title: "认领申请未通过",
+        body: `你对《${postTitle}》的认领申请未通过。${note ? `备注：${note}` : ""}`,
+        link: `/me/claims/${claimId}`,
       });
-      if (result.count === 0) return false;
-      return true;
-    });
-    if (!updated) return;
+    }
 
-    await notify({
-      userId: claim.claimantId,
-      type: "CLAIM_RESULT",
-      title: "认领申请未通过",
-      body: `你对《${claim.post.title}》的认领申请未通过。${note ? `备注：${note}` : ""}`,
-      link: `/me/claims/${claim.id}`,
-    });
-
-    revalidateClaim(claim.id, claim.post.id);
+    revalidateClaim(claimId, postId);
     revalidatePath("/me");
     return;
   }
 
-  if (decision !== "ACCEPT") return;
-  if (claim.post.status !== "OPEN" || claim.post.deletedAt || claim.post.takenDownAt) return;
-
-  try {
-    const updated = await prisma.$transaction(async (tx) => {
-      // 先占用帖子状态，同一帖子即使同时收到多个审核请求也只能通过一条。
-      const post = await tx.post.updateMany({
-        where: { id: claim.post.id, status: "OPEN", deletedAt: null, takenDownAt: null },
-        data: { status: "RESOLVED", resolvedAt: reviewedAt },
+  if (result.status === "ACCEPTED") {
+    if (result.claimantId) {
+      await notify({
+        userId: result.claimantId,
+        type: "CLAIM_RESULT",
+        title: "认领申请已通过",
+        body: `你对《${postTitle}》的认领申请已通过，可以开始约定线下交接。`,
+        link: `/me/claims/${claimId}`,
       });
-      if (post.count === 0) return false;
+    }
 
-      const accepted = await tx.claim.updateMany({
-        where: { id: claim.id, status: "PENDING" },
-        data: {
-          status: "ACCEPTED",
-          reviewNote: note || null,
-          reviewedById: user.id,
-          reviewedAt,
-          reviewerRole,
-        },
+    // 同帖其他待审申请已被函数自动拒绝，逐一通知申请人
+    for (const item of result.rejectedClaims ?? []) {
+      await notify({
+        userId: item.claimantId,
+        type: "CLAIM_RESULT",
+        title: "认领申请未通过",
+        body: `《${postTitle}》已被其他申请人认领。`,
+        link: `/me/claims/${item.claimId}`,
       });
-      if (accepted.count === 0) throw new StaleClaimError();
+    }
 
-      await tx.claim.updateMany({
-        where: { postId: claim.post.id, id: { not: claim.id }, status: "PENDING" },
-        data: {
-          status: "REJECTED",
-          reviewNote: "该物品已被其他申请人认领",
-          reviewedById: user.id,
-          reviewedAt,
-          reviewerRole,
-        },
-      });
-      await tx.handover.upsert({
-        where: { claimId: claim.id },
-        update: {},
-        create: { claimId: claim.id },
-      });
-      return true;
-    });
-    if (!updated) return;
-  } catch (error) {
-    if (error instanceof StaleClaimError) return;
-    throw error;
-  }
-
-  revalidateClaim(claim.id, claim.post.id);
-  revalidatePath("/me");
-
-  // 通知申请人通过，同时提醒被自动拒绝的其它申请人
-  await notify({
-    userId: claim.claimantId,
-    type: "CLAIM_RESULT",
-    title: "认领申请已通过",
-    body: `你对《${claim.post.title}》的认领申请已通过，可以开始约定线下交接。`,
-    link: `/me/claims/${claim.id}`,
-  });
-
-  const rejected = await prisma.claim.findMany({
-    where: { postId: claim.post.id, status: "REJECTED", reviewNote: "该物品已被其他申请人认领" },
-    select: { id: true, claimantId: true },
-  });
-  for (const item of rejected) {
-    await notify({
-      userId: item.claimantId,
-      type: "CLAIM_RESULT",
-      title: "认领申请未通过",
-      body: `《${claim.post.title}》已被其他申请人认领。`,
-      link: `/me/claims/${item.id}`,
-    });
+    revalidateClaim(claimId, postId);
+    revalidatePath("/me");
   }
 }
 
@@ -285,11 +250,11 @@ export async function completeHandoverAction(formData: FormData): Promise<void> 
   if (!claim || claim.status !== "ACCEPTED" || !isClaimParty(claim, user.id)) return;
   if (claim.handover?.completedAt) return;
 
-  await prisma.handover.upsert({
-    where: { claimId: claim.id },
-    update: { completedAt: new Date(), completedById: user.id },
-    create: { claimId: claim.id, completedAt: new Date(), completedById: user.id },
-  });
+  const rows = await prisma.$queryRaw<Array<{ result: Prisma.JsonValue }>>`
+    SELECT fn_complete_handover(${claim.id}::text, ${user.id}::text) AS result
+  `;
+  const result = parseJson<HandoverResult>(rows[0]?.result);
+  if (!result?.ok) return;
 
   const otherId = claim.claimantId === user.id ? claim.post.authorId : claim.claimantId;
   await notify({
