@@ -1,0 +1,504 @@
+// 校园智能失物招领平台 —— 数据库模型
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 用户角色：普通学生 / 管理员（CLFP-USR-0016、0017）
+enum Role {
+  USER
+  ADMIN
+}
+
+/// 账号状态：正常 / 被禁用（CLFP-USR-0002）/ 已归档（CLFP-USR-0021）
+enum UserStatus {
+  ACTIVE
+  BANNED
+  ARCHIVED
+}
+
+/// 帖子类型：寻物启事 / 拾物信息（CLFP-USR-0003、0004）
+enum PostType {
+  LOST
+  FOUND
+}
+
+/// 帖子状态：寻找中 / 已解决 / 已关闭（CLFP-USR-0005、0023）
+enum PostStatus {
+  OPEN
+  RESOLVED
+  CLOSED
+}
+
+/// 用户
+model User {
+  id String @id @default(cuid())
+
+  /// 登录邮箱，唯一（CLFP-USR-0001）
+  email String @unique
+  passwordHash String @map("password_hash")
+
+  /// 昵称，公开展示
+  nickname String
+
+  /// 校内身份信息，注册后首次登录补充填写（CLFP-USR-0001）
+  realName String? @map("real_name")
+  studentNo String? @map("student_no")
+  department String?
+
+  /// 手机号：字段级加密存储 + 脱敏展示（CLFP-USR-0014、0022）
+  phoneEncrypted String? @map("phone_encrypted")
+  phoneMasked String? @map("phone_masked")
+
+  role Role @default(USER)
+  status UserStatus @default(ACTIVE)
+
+  /// 是否已完成四项校内资料的补充
+  profileCompleted Boolean @default(false) @map("profile_completed")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sessions Session[]
+  posts Post[]
+  matchFeedbacks Match[] @relation("MatchFeedbackBy")
+  claims Claim[] @relation("ClaimClaimant")
+  reviewedClaims Claim[] @relation("ClaimReviewer")
+  contactGrantsGiven ContactGrant[] @relation("ContactGrantor")
+  contactGrantsReceived ContactGrant[] @relation("ContactGrantee")
+  notifications Notification[]
+  notificationPreference NotificationPreference?
+  takenDownPosts Post[] @relation("PostTakenDownBy")
+  auditLogs AuditLog[] @relation("AuditOperator")
+  reports Report[] @relation("ReportReporter")
+  handledReports Report[] @relation("ReportHandler")
+  announcements Announcement[] @relation("AnnouncementAuthor")
+
+  @@map("users")
+}
+
+/// 登录会话：会话落在数据库，管理员禁用账号后可立即失效（CLFP-USR-0002）
+model Session {
+  id String @id @default(cuid())
+
+  userId String @map("user_id")
+  /// 只存令牌的 SHA-256 摘要，庫中不保存可用的原始令牌
+  tokenHash String @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  userAgent String?
+  ip String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// 物品类别，可在管理后台增删（CLFP-USR-0025）
+model Category {
+  id String @id @default(cuid())
+  name String @unique
+  sortOrder Int @default(0) @map("sort_order")
+  enabled Boolean @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  posts Post[]
+
+  @@map("categories")
+}
+
+/// 寻物启事 / 拾物信息
+model Post {
+  id String @id @default(cuid())
+
+  authorId String @map("author_id")
+  type PostType
+
+  title String
+  description String
+  categoryId String @map("category_id")
+
+  /// 丢失/拾得地点（CLFP-USR-0006 用预设地点做文本筛选）
+  location String
+  /// 丢失/拾得时间
+  occurredAt DateTime @map("occurred_at")
+
+  status PostStatus @default(OPEN)
+  /// 标记为已解决的时间（CLFP-USR-0023）
+  resolvedAt DateTime? @map("resolved_at")
+  /// 软删除（CLFP-USR-0005）
+  deletedAt DateTime? @map("deleted_at")
+
+  /// 管理员下架（CLFP-USR-0016）：下架后不对外公开展示，作者与管理员仍可见
+  takenDownAt DateTime? @map("taken_down_at")
+  takeDownReason String? @map("take_down_reason")
+  takenDownById String? @map("taken_down_by_id")
+
+  /// 归档（CLFP-USR-0021）：毕业或离职后未完成的信息不再公开，管理员仍可查询
+  archivedAt DateTime? @map("archived_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id])
+  images PostImage[]
+  takenDownBy User? @relation("PostTakenDownBy", fields: [takenDownById], references: [id], onDelete: SetNull)
+
+  embedding PostEmbedding?
+  embeddingTasks EmbeddingTask[]
+  lostMatches Match[] @relation("MatchLostPost")
+  foundMatches Match[] @relation("MatchFoundPost")
+  claims Claim[]
+
+  @@index([status, deletedAt, createdAt])
+  @@index([type, status])
+  @@index([categoryId])
+  @@index([authorId])
+  @@map("posts")
+}
+
+/// 帖子配图，1~6 张（CLFP-USR-0003、0004）
+model PostImage {
+  id String @id @default(cuid())
+
+  postId String @map("post_id")
+  /// 相对 storage/uploads 的路径
+  path String
+  mimeType String @map("mime_type")
+  size Int
+  sortOrder Int @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@map("post_images")
+}
+
+/// 匹配反馈：是我的 / 不是我的 / 待核实（CLFP-USR-0010）
+enum MatchFeedback {
+  NONE
+  MINE
+  NOT_MINE
+  UNSURE
+}
+
+/// 异步任务状态（CLFP-USR-0020：发布后 5 秒内完成向量化与相似检索）
+enum TaskStatus {
+  PENDING
+  DONE
+  FAILED
+}
+
+/// 帖子向量（CLFP-USR-0008）
+/// 目前用 Float[] 保存，后续数据量变大时可平滑换成 pgvector 的 vector 类型
+model PostEmbedding {
+  postId String @id @map("post_id")
+  vector Float[]
+  /// 生成向量时使用的模型名，换模型后需要按此字段批量重建
+  model String
+  dim Int
+  /// 参与向量化的原始文本，便于排查与重建
+  text String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@map("post_embeddings")
+}
+
+/// 向量化任务：发布接口只入队，实际计算由 pipeline/worker 完成
+model EmbeddingTask {
+  id String @id @default(cuid())
+  postId String @map("post_id")
+  status TaskStatus @default(PENDING)
+  attempts Int @default(0)
+  error String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("embedding_tasks")
+}
+
+/// 匹配结果：失物与拾物的配对，双向可见（CLFP-USR-0008、0009）
+model Match {
+  id String @id @default(cuid())
+
+  lostPostId String @map("lost_post_id")
+  foundPostId String @map("found_post_id")
+
+  /// 匹配置信度 0~1
+  score Float
+  /// 打分明细与推荐理由，便于解释匹配为什么成立
+  detail Json
+
+  feedback MatchFeedback @default(NONE)
+  feedbackById String? @map("feedback_by_id")
+  feedbackAt DateTime? @map("feedback_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  lostPost Post @relation("MatchLostPost", fields: [lostPostId], references: [id], onDelete: Cascade)
+  foundPost Post @relation("MatchFoundPost", fields: [foundPostId], references: [id], onDelete: Cascade)
+  feedbackBy User? @relation("MatchFeedbackBy", fields: [feedbackById], references: [id], onDelete: SetNull)
+
+  @@unique([lostPostId, foundPostId])
+  @@index([feedback])
+  @@index([lostPostId])
+  @@index([foundPostId])
+  @@map("matches")
+}
+
+/// 认领申请状态（CLFP-USR-0011）
+enum ClaimStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+/// 认领申请：由失主或拾主发起，需填写认领凭证
+model Claim {
+  id String @id @default(cuid())
+
+  postId String @map("post_id")
+  claimantId String @map("claimant_id")
+  /// 可选：从哪条匹配推荐发起的认领
+  matchId String? @map("match_id")
+
+  /// 认领说明
+  message String
+  /// 认领凭证：物品专属特征、购买凭证、存放位置等
+  proof String
+  /// 申请人联系方式，字段级加密 + 脱敏展示（CLFP-USR-0014、0022）
+  contactEncrypted String @map("contact_encrypted")
+  contactMasked String @map("contact_masked")
+
+  status ClaimStatus @default(PENDING)
+  reviewNote String? @map("review_note")
+  reviewedById String? @map("reviewed_by_id")
+  reviewedAt DateTime? @map("reviewed_at")
+  /// 审核人角色：OWNER（帖子作者）或 ADMIN
+  reviewerRole String? @map("reviewer_role")
+
+  /// 超过该时间仍未被作者处理，则自动转交管理员（CLFP-USR-0011）
+  escalateAt DateTime @map("escalate_at")
+  escalatedAt DateTime? @map("escalated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  claimant User @relation("ClaimClaimant", fields: [claimantId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("ClaimReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  handover Handover?
+  contactGrants ContactGrant[]
+
+  @@unique([postId, claimantId])
+  @@index([status, escalateAt])
+  @@index([claimantId])
+  @@map("claims")
+}
+
+/// 线下交接安排与结果（CLFP-USR-0012）
+model Handover {
+  id String @id @default(cuid())
+
+  claimId String @unique @map("claim_id")
+
+  meetAt DateTime? @map("meet_at")
+  meetPlace String? @map("meet_place")
+  proposedById String? @map("proposed_by_id")
+  proposedAt DateTime? @map("proposed_at")
+
+  /// 任一方确认交接完成即生效（已确认的口径）
+  completedAt DateTime? @map("completed_at")
+  completedById String? @map("completed_by_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@map("handovers")
+}
+
+/// 联系方式授权：认领通过后，由本人决定是否把自己的联系方式展示给对方（CLFP-USR-0014）
+model ContactGrant {
+  id String @id @default(cuid())
+
+  claimId String @map("claim_id")
+  /// 授权方：展示自己联系方式的人
+  grantorId String @map("grantor_id")
+  /// 被授权方：可以看到对方联系方式的人
+  granteeId String @map("grantee_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  grantor User @relation("ContactGrantor", fields: [grantorId], references: [id], onDelete: Cascade)
+  grantee User @relation("ContactGrantee", fields: [granteeId], references: [id], onDelete: Cascade)
+
+  @@unique([claimId, grantorId])
+  @@index([claimId])
+  @@map("contact_grants")
+}
+
+/// 通知类型（CLFP-USR-0013）
+enum NotificationType {
+  MATCH
+  CLAIM_RECEIVED
+  CLAIM_RESULT
+  CLAIM_ESCALATED
+  HANDOVER
+  SYSTEM
+}
+
+/// 站内通知：Web 版用通知中心替代微信订阅消息（见 PRD 第 1 节）
+model Notification {
+  id String @id @default(cuid())
+
+  userId String @map("user_id")
+  type NotificationType
+  title String
+  body String
+  /// 点击通知跳转的站内地址
+  link String?
+
+  /// 计划送达时间：在免打扰时段内创建的通知会推迟到时段结束后（CLFP-USR-0019）
+  deliverAt DateTime @default(now()) @map("deliver_at")
+  readAt DateTime? @map("read_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deliverAt])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+/// 消息接收偏好（CLFP-USR-0019）
+model NotificationPreference {
+  userId String @id @map("user_id")
+
+  /// 是否接收站内通知
+  inApp Boolean @default(true) @map("in_app")
+  /// 是否接收邮件通知（本期未接入邮件服务，先保存偏好）
+  email Boolean @default(false) @map("email")
+
+  /// 免打扰时段，单位小时；start > end 表示跨天
+  quietEnabled Boolean @default(true) @map("quiet_enabled")
+  quietStart Int @default(22) @map("quiet_start")
+  quietEnd Int @default(7) @map("quiet_end")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+/// 管理员操作日志（CLFP-USR-0016）
+model AuditLog {
+  id String @id @default(cuid())
+
+  operatorId String? @map("operator_id")
+  /// 动作标识，例如 POST_TAKE_DOWN、POST_RESTORE、CATEGORY_UPDATE
+  action String
+  /// 操作对象类型：POST、USER、CLAIM、CATEGORY、CONFIG
+  targetType String @map("target_type")
+  targetId String @map("target_id")
+  /// 附加上下文（标题、原因等），便于回溯
+  detail Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  operator User? @relation("AuditOperator", fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// 举报处理状态（CLFP-USR-0015）
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  REJECTED
+}
+
+/// 举报记录（CLFP-USR-0015）
+model Report {
+  id String @id @default(cuid())
+
+  reporterId String @map("reporter_id")
+  /// 目前只支持举报信息；保留字段以便扩展到用户等对象
+  targetType String @map("target_type")
+  targetId String @map("target_id")
+
+  /// 举报类型：不实信息 / 重复信息 / 涉嫌诈骗 / 违规内容 / 其他
+  reason String
+  detail String?
+
+  status ReportStatus @default(PENDING)
+  handledById String? @map("handled_by_id")
+  handledAt DateTime? @map("handled_at")
+  handleNote String? @map("handle_note")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  reporter User @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  handledBy User? @relation("ReportHandler", fields: [handledById], references: [id], onDelete: SetNull)
+
+  /// 同一个人对同一对象只能举报一次
+  @@unique([reporterId, targetType, targetId])
+  @@index([status, createdAt])
+  @@map("reports")
+}
+
+/// 平台公告：在小程序首页与登录后首屏展示（CLFP-USR-0024），Web 版展示在首页
+model Announcement {
+  id String @id @default(cuid())
+
+  title String
+  body String
+  /// 置顶公告优先展示
+  pinned Boolean @default(false)
+
+  publishedAt DateTime @default(now()) @map("published_at")
+  /// 过期时间，为空表示长期有效
+  expiresAt DateTime? @map("expires_at")
+
+  createdById String? @map("created_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  createdBy User? @relation("AnnouncementAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([publishedAt])
+  @@map("announcements")
+}
+
+/// 系统配置：类别排序、匹配阈值、模型选择等（CLFP-USR-0025）
+model AppConfig {
+  key String @id
+  value Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_configs")
+}
